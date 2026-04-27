@@ -36,6 +36,8 @@ vi.mock('../agent-process.js', () => {
     }
     trigger() { return Promise.resolve() }
     stop() {}
+    pause() { this.state = 'paused' }
+    resume() { this.state = 'idle' }
     handleSteer() {}
   }
   return { AgentProcess: MockAgentProcess }
@@ -338,6 +340,33 @@ describe('Supervisor', () => {
         from: 'cli',
       }))
       expect(res.error?.code).toBe(RPC_ERRORS.INVALID_PARAMS)
+    })
+  })
+
+  describe('handleRpcAsync — runtime control', () => {
+    it('returns runtime status without secrets', async () => {
+      supervisor.initEventBus('run-runtime')
+      const res = await supervisor.handleRpcAsync(rpc(RPC_METHODS.RUNTIME_STATUS))
+
+      expect(res.error).toBeUndefined()
+      expect(res.result).toMatchObject({
+        supervisor: { connection: 'connected', status: 'running' },
+        currentRuntime: 'claude',
+        loop: { runId: 'run-runtime', currentLoop: 0 },
+      })
+      expect(JSON.stringify(res.result)).not.toContain('apiKey')
+    })
+
+    it('records pause and resume as runtime log entries', async () => {
+      await supervisor.handleRpcAsync(rpc(RPC_METHODS.SUPERVISOR_PAUSE))
+      await supervisor.handleRpcAsync(rpc(RPC_METHODS.SUPERVISOR_RESUME))
+
+      const logs = await supervisor.handleRpcAsync(rpc(RPC_METHODS.RUNTIME_LOGS, { limit: 10 }))
+
+      expect(logs.error).toBeUndefined()
+      const messages = ((logs.result as { logs: Array<{ message: string }> }).logs).map(log => log.message)
+      expect(messages).toContain('Supervisor paused')
+      expect(messages).toContain('Supervisor resumed')
     })
   })
 

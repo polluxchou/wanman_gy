@@ -6,6 +6,10 @@
     "./sdk": {
       "types": "./src/sdk.ts",
       "default": "./dist/sdk.js"
+    },
+    "./takeover-project": {
+      "types": "./src/takeover-project.ts",
+      "default": "./src/takeover-project.ts"
     }
   },
   "bin": {

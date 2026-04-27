@@ -43,10 +43,15 @@ import type {
   ArtifactListParams,
   ChangeCapsuleStatus,
   InitiativeStatus,
+  ThreadListParams,
+  ThreadGetParams,
+  HumanListParams,
+  HumanAckParams,
 } from '@wanman/core';
 import { RPC_METHODS, RPC_ERRORS, createRpcResponse, createRpcError } from '@wanman/core';
 import { MessageStore } from './message-store.js';
 import { ContextStore } from './context-store.js';
+import { HumanInboxStore } from './human-inbox-store.js';
 import { Relay } from './relay.js';
 import { buildEnrichedPrompt } from './config.js';
 import { AgentProcess } from './agent-process.js';
@@ -81,6 +86,19 @@ import {
 import { AgentHomeManager } from './agent-home-manager.js';
 
 const log = createLogger('supervisor');
+
+type RuntimeLogLevel = 'info' | 'warn' | 'error';
+
+interface RuntimeLogEntry {
+  id: string;
+  timestamp: number;
+  level: RuntimeLogLevel;
+  source: 'supervisor' | 'agent' | 'runtime';
+  agent?: string | null;
+  eventType?: string | null;
+  message: string;
+  data?: Record<string, unknown>;
+}
 
 function postStorySyncEvent(event: {
   event_type: string;
@@ -169,6 +187,7 @@ export class Supervisor {
   private headless: boolean;
   private db!: Database.Database;
   private messageStore!: MessageStore;
+  private humanInboxStore!: HumanInboxStore;
   private contextStore!: ContextBackend;
   private relay!: MessageTransport;
   private agents: Map<string, AgentProcess> = new Map();
@@ -199,6 +218,8 @@ export class Supervisor {
   private completedRuns = 0;
   /** Per-agent completed run counts */
   private completedRunsByAgent = new Map<string, number>();
+  /** Recent control and runtime events exposed through runtime.logs. */
+  private runtimeLogs: RuntimeLogEntry[] = [];
 
   constructor(config: AgentMatrixConfig, options?: SupervisorOptions) {
     this.config = config;
@@ -368,7 +389,57 @@ export class Supervisor {
   /** Initialize the loop event bus for observability. Call before start(). */
   initEventBus(runId: string): LoopEventBus {
     this._eventBus = new LoopEventBus(runId)
+    this._eventBus.on(event => {
+      const agent = 'agent' in event && typeof event.agent === 'string' ? event.agent : null
+      this.recordRuntimeLog('info', `Runtime event: ${event.type}`, {
+        source: agent ? 'agent' : 'runtime',
+        agent,
+        eventType: event.type,
+        data: event as unknown as Record<string, unknown>,
+      })
+    })
     return this._eventBus
+  }
+
+  private recordRuntimeLog(
+    level: RuntimeLogLevel,
+    message: string,
+    options: {
+      source?: RuntimeLogEntry['source'];
+      agent?: string | null;
+      eventType?: string | null;
+      data?: Record<string, unknown>;
+    } = {},
+  ): RuntimeLogEntry {
+    const entry: RuntimeLogEntry = {
+      id: `runtime-log-${Date.now().toString(36)}-${this.runtimeLogs.length.toString(36)}`,
+      timestamp: Date.now(),
+      level,
+      source: options.source ?? 'supervisor',
+      agent: options.agent ?? null,
+      eventType: options.eventType ?? null,
+      message,
+      ...(options.data ? { data: options.data } : {}),
+    };
+    this.runtimeLogs.push(entry);
+    if (this.runtimeLogs.length > 500) {
+      this.runtimeLogs.splice(0, this.runtimeLogs.length - 500);
+    }
+    return entry;
+  }
+
+  private getRuntimeLogs(params: {
+    agent?: string;
+    level?: RuntimeLogLevel;
+    since?: number;
+    limit?: number;
+  }): RuntimeLogEntry[] {
+    const limit = Math.max(1, Math.min(Number(params.limit ?? 100), 500));
+    return this.runtimeLogs
+      .filter(entry => !params.agent || entry.agent === params.agent)
+      .filter(entry => !params.level || entry.level === params.level)
+      .filter(entry => params.since === undefined || entry.timestamp > params.since)
+      .slice(-limit);
   }
 
   /** Build a preamble provider closure that captures supervisor state */
@@ -633,6 +704,7 @@ ${activePaths}`;
     const dbPath = config.dbPath || '/tmp/wanman.db';
     this.db = this.openDatabase(dbPath);
     this.messageStore = new MessageStore(this.db);
+    this.humanInboxStore = new HumanInboxStore(this.db);
     this.contextStore = new ContextStore(this.db);
     this.relay = new Relay(this.messageStore);
     this.taskPool = new TaskPool(this.db);
@@ -846,7 +918,7 @@ ${activePaths}`;
           return createRpcError(req.id, RPC_ERRORS.AGENT_NOT_FOUND, `Agent "${to}" not found`);
         }
         const id = isHumanConversationTarget(to)
-          ? `human-${Date.now()}`
+          ? this.humanInboxStore.enqueue(sender, syncMessageType, payload, messagePriority)
           : this.relay.send(
               sender,
               to,
@@ -886,6 +958,7 @@ ${activePaths}`;
           state: proc.state,
           lifecycle: proc.definition.lifecycle,
           model: proc.definition.model,
+          runtime: resolveAgentRuntime(proc.definition),
         }));
         return createRpcResponse(req.id, { agents });
       }
@@ -1678,6 +1751,7 @@ ${activePaths}`;
           agent.pause();
           log.info('paused agent', { agent: name });
         }
+        this.recordRuntimeLog('warn', 'Supervisor paused');
         return createRpcResponse(req.id, { status: 'paused', agents: this.agents.size });
       }
 
@@ -1686,7 +1760,109 @@ ${activePaths}`;
           agent.resume();
           log.info('resumed agent', { agent: name });
         }
+        this.recordRuntimeLog('info', 'Supervisor resumed');
         return createRpcResponse(req.id, { status: 'running', agents: this.agents.size });
+      }
+
+      case RPC_METHODS.RUNTIME_STATUS: {
+        return createRpcResponse(req.id, this.getRuntimeControlStatus());
+      }
+
+      case RPC_METHODS.RUNTIME_LOGS: {
+        const { agent, level, since, limit } = params as {
+          agent?: string;
+          level?: RuntimeLogLevel;
+          since?: number;
+          limit?: number;
+        };
+        if (level !== undefined && !['info', 'warn', 'error'].includes(level)) {
+          return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, 'Invalid log level');
+        }
+        return createRpcResponse(req.id, {
+          logs: this.getRuntimeLogs({ agent, level, since, limit }),
+        });
+      }
+
+      // ── Thread list / get (read-only, non-destructive) ──
+
+      case RPC_METHODS.THREAD_LIST: {
+        const { agent, peer, humanOnly, since, limit } = (params as unknown as ThreadListParams) ?? {};
+        const messages = this.messageStore.listAll({ limit: limit ?? 500, since });
+
+        // Group by sorted participant pair
+        const threadMap = new Map<string, typeof messages>();
+        for (const msg of messages) {
+          if (humanOnly && msg.to !== 'human' && msg.from !== 'human') continue;
+          if (agent && msg.from !== agent && msg.to !== agent) continue;
+          if (peer) {
+            const hasPeer = (msg.from === agent && msg.to === peer) || (msg.from === peer && msg.to === agent);
+            if (!hasPeer) continue;
+          }
+          const key = [msg.from, msg.to].sort().join('|');
+          const bucket = threadMap.get(key) ?? [];
+          bucket.push(msg);
+          threadMap.set(key, bucket);
+        }
+
+        const threads = Array.from(threadMap.entries()).map(([id, msgs]) => {
+          const sorted = msgs.sort((a, b) => a.timestamp - b.timestamp);
+          const last = sorted[sorted.length - 1]!;
+          const parts = id.split('|');
+          const pendingForHuman = last.to === 'human' && !last.delivered;
+          return {
+            id,
+            participants: parts,
+            lastMessage: last,
+            messageCount: msgs.length,
+            pendingForHuman,
+          };
+        }).sort((a, b) => (b.lastMessage?.timestamp ?? 0) - (a.lastMessage?.timestamp ?? 0));
+
+        return createRpcResponse(req.id, { threads });
+      }
+
+      case RPC_METHODS.THREAD_GET: {
+        const { id, limit, before } = (params as unknown as ThreadGetParams) ?? {};
+        if (!id) {
+          return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, 'Missing "id"');
+        }
+        const parts = id.split('|');
+        if (parts.length !== 2 || !parts[0] || !parts[1]) {
+          return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, 'Thread id must be two participants joined by "|"');
+        }
+        let messages = this.messageStore.listBetween(parts[0], parts[1], { limit: limit ?? 200 });
+        if (before) {
+          messages = messages.filter(m => m.timestamp < before);
+        }
+        const pendingForHuman = messages.some(m => m.to === 'human' && !m.delivered);
+        const thread = {
+          id,
+          participants: parts,
+          lastMessage: messages[messages.length - 1] ?? null,
+          messageCount: messages.length,
+          pendingForHuman,
+        };
+        return createRpcResponse(req.id, { thread, messages });
+      }
+
+      // ── Human inbox ──
+
+      case RPC_METHODS.HUMAN_LIST: {
+        const { status, kind } = (params as unknown as HumanListParams) ?? {};
+        let items = this.humanInboxStore.list(status ? { status } : undefined);
+        if (kind) {
+          items = items.filter(i => i.type === kind);
+        }
+        return createRpcResponse(req.id, { items });
+      }
+
+      case RPC_METHODS.HUMAN_ACK: {
+        const { id } = (params as unknown as HumanAckParams) ?? {};
+        if (!id) {
+          return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, 'Missing "id"');
+        }
+        const changed = this.humanInboxStore.ack(id);
+        return createRpcResponse(req.id, { ok: true, changed });
       }
 
       default:
@@ -1918,6 +2094,8 @@ ${activePaths}`;
         name,
         state: proc.state,
         lifecycle: proc.definition.lifecycle,
+        model: proc.definition.model,
+        runtime: resolveAgentRuntime(proc.definition),
       })),
       timestamp: new Date().toISOString(),
     };
@@ -1940,6 +2118,67 @@ ${activePaths}`;
     };
 
     return health;
+  }
+
+  private getRuntimeControlStatus(): Record<string, unknown> {
+    const health = this.getHealth() as {
+      agents: Array<{
+        name: string;
+        state: string;
+        lifecycle: string;
+        model?: string;
+        runtime?: 'claude' | 'codex';
+      }>;
+      loop?: { runId?: string; currentLoop?: number };
+      timestamp: string;
+    };
+    const paused = health.agents.length > 0 && health.agents.every(agent => agent.state === 'paused');
+    const runtimes = new Set(health.agents.map(agent => agent.runtime ?? 'claude'));
+    const runtime = runtimes.size === 1 ? [...runtimes][0] ?? 'claude' : null;
+    const goal = this.config.goal || process.env['WANMAN_GOAL'] || null;
+    const lastEvent = this.runtimeLogs.at(-1) ?? null;
+
+    return {
+      hostBridge: false,
+      supervisor: {
+        connection: 'connected',
+        url: `http://localhost:${this.config.port ?? 3120}`,
+        status: paused ? 'paused' : 'running',
+        error: null,
+      },
+      activeSession: health.loop?.runId
+        ? {
+            id: health.loop.runId,
+            kind: 'run',
+            status: paused ? 'paused' : 'running',
+            goal: goal ?? '',
+            runtime: runtime ?? 'claude',
+            supervisorUrl: `http://localhost:${this.config.port ?? 3120}`,
+            startedAt: this.startedAt,
+            endedAt: null,
+            error: null,
+          }
+        : null,
+      currentGoal: goal,
+      currentRuntime: runtime,
+      agents: health.agents.map(agent => ({
+        ...agent,
+        completedRuns: this.completedRunsByAgent.get(agent.name) ?? 0,
+      })),
+      loop: health.loop
+        ? { runId: health.loop.runId ?? '', currentLoop: health.loop.currentLoop ?? 0 }
+        : null,
+      lastEvent,
+      auth: [],
+      capabilities: {
+        startRun: false,
+        startTakeover: false,
+        stopSession: false,
+        pause: true,
+        resume: true,
+        logs: true,
+      },
+    };
   }
 
   /** Graceful shutdown. */

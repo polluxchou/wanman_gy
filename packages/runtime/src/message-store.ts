@@ -22,6 +22,7 @@ export class MessageStore {
   private deliverStmt!: Database.Statement;
   private hasSteerStmt!: Database.Statement;
   private countPendingStmt!: Database.Statement;
+  private listAllStmt!: Database.Statement;
 
   constructor(db: Database.Database) {
     this.db = db;
@@ -53,6 +54,14 @@ export class MessageStore {
     this.countPendingStmt = this.db.prepare(`
       SELECT COUNT(*) as count FROM messages
       WHERE "to" = ? AND delivered = 0
+    `);
+
+    // Non-destructive read: all messages ordered newest-first
+    this.listAllStmt = this.db.prepare(`
+      SELECT id, "from", "to", priority, type, payload, timestamp, delivered
+      FROM messages
+      ORDER BY timestamp DESC
+      LIMIT ?
     `);
   }
 
@@ -145,5 +154,68 @@ export class MessageStore {
   countPending(agent: string): number {
     const row = this.countPendingStmt.get(agent) as { count: number } | undefined;
     return row?.count ?? 0;
+  }
+
+  /**
+   * Non-destructive read of all messages. Never marks anything as delivered.
+   * Used by thread.list / thread.get RPCs — safe to call from the cockpit.
+   */
+  listAll(opts?: { limit?: number; since?: number }): AgentMessage[] {
+    const limit = opts?.limit ?? 500;
+    let rows: Array<{
+      id: string; from: string; to: string; priority: MessagePriority;
+      type: string; payload: string; timestamp: number; delivered: number;
+    }>;
+    if (opts?.since) {
+      rows = this.db.prepare(`
+        SELECT id, "from", "to", priority, type, payload, timestamp, delivered
+        FROM messages
+        WHERE timestamp >= ?
+        ORDER BY timestamp DESC
+        LIMIT ?
+      `).all(opts.since, limit) as typeof rows;
+    } else {
+      rows = this.listAllStmt.all(limit) as typeof rows;
+    }
+    return rows.map(r => ({
+      id: r.id,
+      from: r.from,
+      to: r.to,
+      type: r.type,
+      payload: tryParseJson(r.payload),
+      priority: r.priority,
+      timestamp: r.timestamp,
+      delivered: Boolean(r.delivered),
+    }));
+  }
+
+  /**
+   * Non-destructive read of messages between two participants.
+   * Used by thread.get — safe to call from the cockpit.
+   */
+  listBetween(a: string, b: string, opts?: { limit?: number; since?: number }): AgentMessage[] {
+    const limit = opts?.limit ?? 200;
+    const since = opts?.since ?? 0;
+    const rows = this.db.prepare(`
+      SELECT id, "from", "to", priority, type, payload, timestamp, delivered
+      FROM messages
+      WHERE timestamp >= ?
+        AND (("from" = ? AND "to" = ?) OR ("from" = ? AND "to" = ?))
+      ORDER BY timestamp ASC
+      LIMIT ?
+    `).all(since, a, b, b, a, limit) as Array<{
+      id: string; from: string; to: string; priority: MessagePriority;
+      type: string; payload: string; timestamp: number; delivered: number;
+    }>;
+    return rows.map(r => ({
+      id: r.id,
+      from: r.from,
+      to: r.to,
+      type: r.type,
+      payload: tryParseJson(r.payload),
+      priority: r.priority,
+      timestamp: r.timestamp,
+      delivered: Boolean(r.delivered),
+    }));
   }
 }

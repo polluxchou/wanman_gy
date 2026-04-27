@@ -59,6 +59,11 @@ export type {
   CapsuleMineParams,
   ArtifactPutParams,
   ArtifactListParams,
+  ArtifactGetParams,
+  ThreadListParams,
+  ThreadGetParams,
+  HumanListParams,
+  HumanAckParams,
 } from './protocol.js';
 
 // Agent registry

@@ -126,6 +126,22 @@ export const RPC_METHODS = {
   SUPERVISOR_PAUSE: 'supervisor.pause',
   /** Resume all agents — continue the run loop */
   SUPERVISOR_RESUME: 'supervisor.resume',
+  /** Read local runtime/supervisor control status */
+  RUNTIME_STATUS: 'runtime.status',
+  /** Read recent runtime control/event log entries */
+  RUNTIME_LOGS: 'runtime.logs',
+
+  // ── Read-only thread view (non-destructive; never calls agent.recv) ──
+  /** List message threads grouped by participant pair */
+  THREAD_LIST: 'thread.list',
+  /** Get messages in a thread by thread ID */
+  THREAD_GET: 'thread.get',
+
+  // ── Human inbox ──
+  /** List human-bound messages from the human_inbox table */
+  HUMAN_LIST: 'human.list',
+  /** Acknowledge (mark handled) a human inbox item */
+  HUMAN_ACK: 'human.ack',
 } as const;
 
 // ── RPC param/result types ──
@@ -299,6 +315,42 @@ export interface ArtifactListParams {
 
 export interface ArtifactGetParams {
   id: number;
+}
+
+// ── Thread RPC params ──
+
+export interface ThreadListParams {
+  /** Filter to threads involving this agent */
+  agent?: string;
+  /** Filter to threads between agent and peer (both directions) */
+  peer?: string;
+  /** Only include threads that have a message addressed to 'human' */
+  humanOnly?: boolean;
+  /** Only include messages after this epoch-ms timestamp */
+  since?: number;
+  /** Max messages to scan (default 500) */
+  limit?: number;
+}
+
+export interface ThreadGetParams {
+  /** Thread id — the sorted participant pair joined by '|', e.g. "ceo|dev" */
+  id: string;
+  /** Max messages to return (default 200) */
+  limit?: number;
+  /** Return only messages before this epoch-ms timestamp */
+  before?: number;
+}
+
+// ── Human inbox RPC params ──
+
+export interface HumanListParams {
+  status?: 'open' | 'handled';
+  /** Filter by message type, e.g. 'decision', 'blocker' */
+  kind?: string;
+}
+
+export interface HumanAckParams {
+  id: string;
 }
 
 // ── Helper to create JSON-RPC request/response ──
