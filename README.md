@@ -2,9 +2,23 @@
 
 **English** | [中文](README.zh.md) | [日本語](README.ja.md)
 
-Agent Matrix framework — run a supervised network of Claude Code or Codex agents that collaborate on your machine.
+## ⚠️ Fork Notice
 
-wanman is an open-source local-mode agent matrix framework. Runs a supervised network of Claude Code or Codex agents on your machine, coordinated through a JSON-RPC supervisor.
+This repository is an experimental fork of the original [wanman](https://github.com/chekusu/wanman).
+It is not an official release.
+
+### Purpose of this fork
+This fork is used to explore:
+- Local web cockpit workflows (embedded cockpit-host + Vite integration)
+- Developer experience improvements for local-first usage
+- Potential extensions toward collaborative / multi-user scenarios
+
+### Stability
+- This fork may diverge from upstream behavior
+- Some features are incomplete or experimental
+- Backward compatibility is not guaranteed
+
+If you are looking for the stable base framework, please refer to the upstream repository.
 
 ## About wanman
 
