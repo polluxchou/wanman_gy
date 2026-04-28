@@ -1,7 +1,6 @@
 # wanman
 
-**English** | [中文](README.zh.md) | [日本語](README.ja.md)
-
+> ⚠️ Experimental fork of wanman focused on local-first cockpit workflow and developer experience improvements.
 ## ⚠️ Fork Notice
 
 This repository is an experimental fork of the original [wanman](https://github.com/chekusu/wanman).
@@ -38,6 +37,40 @@ The name wanman comes from the Japanese [ワンマン電車 / one-man train](htt
 - Dynamically configures agent roles, including automatically extracting roles from high-quality agent role catalogs on the internet.
 - Supports dynamic skill self-evolution.
 - Supports db9-powered global search and story retrieval.
+
+## What's Different from Upstream
+
+Compared to the original wanman, this fork introduces:
+
+### 1. Local Web Cockpit (Experimental)
+- Embedded cockpit-host inside Vite dev server
+- No separate host process required during development
+- Simplified local UI workflow
+
+### 2. Developer Workflow Enhancements
+- Improved local setup experience
+- Better integration between CLI and UI
+- Faster iteration loop for agent orchestration
+
+### 3. Early Exploration of Collaboration Layer
+- Investigating patterns for multi-user / shared agent workflows
+- Not production-ready
+
+> Note: These changes are experimental and may not align with upstream design decisions.
+
+## When to Use This Fork
+
+Use this repository if you want to:
+
+- Experiment with wanman in a local-first environment
+- Explore UI-driven agent orchestration workflows
+- Contribute ideas around developer experience or collaboration
+
+Do NOT use this fork if you need:
+
+- A stable production setup
+- Long-term API compatibility
+- Guaranteed alignment with upstream roadmap
 
 ## Quickstart
 
@@ -178,5 +211,15 @@ Shared skills shipped today (`packages/core/skills/`):
 - [Contributing](CONTRIBUTING.md) — tests, typecheck, commit conventions.
 
 ## License
+
+## Upstream Status
+
+This fork is currently:
+
+- Based on: chekusu/wanman@main
+- Sync strategy: manual / periodic
+- Divergence level: low / medium / high
+
+We aim to keep compatibility where possible, but do not guarantee full sync.
 
 Apache-2.0 — see [LICENSE](LICENSE).
